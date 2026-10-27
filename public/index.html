@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carte manif — éphémère</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+  #map { position: absolute; inset: 48px 0 0 0; }
+  header { position: absolute; top: 0; left: 0; right: 0; height: 48px; background: #111; color: #fff;
+           display: flex; align-items: center; gap: 8px; padding: 0 10px; z-index: 1000; overflow-x: auto; white-space: nowrap; }
+  header b { margin-right: auto; }
+  header a, header button { color: #fff; background: #333; border: 0; border-radius: 6px; padding: 6px 10px;
+           text-decoration: none; font-size: 13px; cursor: pointer; }
+  #panel { position: absolute; bottom: 0; left: 0; right: 0; background: #fff; z-index: 1000; padding: 12px;
+           box-shadow: 0 -2px 10px #0004; display: none; }
+  #panel select, #panel textarea, #panel button { width: 100%; box-sizing: border-box; margin-top: 6px; font-size: 16px; padding: 8px; }
+  #hint { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); background: #fffe; z-index: 999;
+          padding: 6px 12px; border-radius: 16px; font-size: 13px; }
+  .pin { font-size: 24px; text-align: center; line-height: 28px; filter: drop-shadow(0 1px 2px #0008); }
+  .pop button { margin: 6px 6px 0 0; }
+  .meta { color: #666; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <b>Carte manif · 48 h max</b>
+  <button id="loc">Ma position</button>
+  <span id="msg"></span>
+</header>
+<div id="map"></div>
+<div id="hint">Touchez la carte pour ajouter un point</div>
+<div id="panel">
+  <select id="type"></select>
+  <textarea id="text" rows="2" maxlength="200" placeholder="Détail court (optionnel, 200 caractères)"></textarea>
+  <button id="send">Publier</button>
+  <button id="cancel">Annuler</button>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ====== À PERSONNALISER : liens vers des messageries chiffrées ======
+const MESSAGERIES = [
+  { nom: 'Signal',  url: 'https://signal.org/' },          // remplacer par un lien d'invitation de groupe
+  { nom: 'Session', url: 'https://getsession.org/' },
+  { nom: 'Element', url: 'https://element.io/' },
+];
+// =====================================================================
+
+const TYPES = {
+  rdv:     { icon: '📍', label: 'Point de RDV' },
+  nasse:   { icon: '🚧', label: 'Nasse / barrage' },
+  secours: { icon: '⛑️', label: 'Secours / point d’eau' },
+  danger:  { icon: '⚠️', label: 'Zone dangereuse' },
+  info:    { icon: '💬', label: 'Information' },
+};
+
+const header = document.querySelector('header');
+MESSAGERIES.forEach(m => { const a = document.createElement('a'); a.href = m.url; a.target = '_blank';
+  a.rel = 'noopener noreferrer'; a.textContent = '🔒 ' + m.nom; header.appendChild(a); });
+
+const sel = document.getElementById('type');
+Object.entries(TYPES).forEach(([k, v]) => sel.add(new Option(v.icon + ' ' + v.label, k)));
+
+const map = L.map('map').setView([46.6, 2.5], 6);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+
+const markers = new Map();
+let draft = null, draftPos = null;
+const panel = document.getElementById('panel');
+
+map.on('click', e => {
+  draftPos = e.latlng;
+  if (draft) draft.setLatLng(e.latlng); else draft = L.marker(e.latlng, { opacity: .6 }).addTo(map);
+  panel.style.display = 'block';
+  document.getElementById('hint').style.display = 'none';
+});
+function closePanel() {
+  panel.style.display = 'none'; document.getElementById('text').value = '';
+  if (draft) { map.removeLayer(draft); draft = null; }
+}
+document.getElementById('cancel').onclick = closePanel;
+document.getElementById('send').onclick = async () => {
+  if (!draftPos) return;
+  const r = await fetch('/api/points', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lat: draftPos.lat, lng: draftPos.lng, type: sel.value,
+                           text: document.getElementById('text').value }) });
+  flash(r.ok ? 'Publié' : r.status === 429 ? 'Trop de signalements, patientez' : 'Erreur');
+  closePanel(); refresh();
+};
+document.getElementById('loc').onclick = () =>
+  navigator.geolocation.getCurrentPosition(p => map.setView([p.coords.latitude, p.coords.longitude], 16),
+    () => flash('Position refusée'));
+
+function flash(t) { const m = document.getElementById('msg'); m.textContent = t; setTimeout(() => m.textContent = '', 3000); }
+
+function ago(ts) {
+  const m = Math.round((Date.now() - ts) / 60000);
+  return m < 1 ? 'à l’instant' : m < 60 ? `il y a ${m} min` : `il y a ${Math.round(m / 60)} h`;
+}
+
+function popup(p) {
+  const d = document.createElement('div'); d.className = 'pop';
+  const t = document.createElement('b'); t.textContent = TYPES[p.type].icon + ' ' + TYPES[p.type].label; d.appendChild(t);
+  if (p.text) { const x = document.createElement('div'); x.textContent = p.text; d.appendChild(x); }
+  const m = document.createElement('div'); m.className = 'meta';
+  m.textContent = `${ago(p.created)} · expire dans ${Math.max(1, Math.round((p.expires - Date.now()) / 3600000))} h`;
+  d.appendChild(m);
+  [['ok', `✔ Confirmé (${p.ok})`], ['no', `✖ Faux (${p.no})`]].forEach(([v, label]) => {
+    const b = document.createElement('button'); b.textContent = label;
+    b.onclick = async () => { const r = await fetch(`/api/points/${p.id}/vote`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ v }) });
+      flash(r.ok ? 'Vote pris en compte' : 'Déjà voté'); refresh(); };
+    d.appendChild(b);
+  });
+  return d;
+}
+
+async function refresh() {
+  let list;
+  try { list = await (await fetch('/api/points')).json(); } catch { return; }
+  const seen = new Set();
+  list.forEach(p => {
+    seen.add(p.id);
+    let mk = markers.get(p.id);
+    if (!mk) {
+      mk = L.marker([p.lat, p.lng], { icon: L.divIcon({ className: 'pin', html: TYPES[p.type].icon, iconSize: [30, 30] }) }).addTo(map);
+      markers.set(p.id, mk);
+    }
+    mk.bindPopup(() => popup(p));
+  });
+  for (const [id, mk] of markers) if (!seen.has(id)) { map.removeLayer(mk); markers.delete(id); }
+}
+refresh(); setInterval(refresh, 5000);
+</script>
+</body>
+</html>
