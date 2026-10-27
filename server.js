@@ -13,7 +13,7 @@ app.set('trust proxy', 1);
 app.disable('x-powered-by');
 app.use(express.json({ limit: '2kb' }));
 app.use((req, res, next) => {
-  res.set({ 'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store' });
+  res.set({ 'Referrer-Policy': 'origin', 'Cache-Control': 'no-store' });
   next();
 });
 app.use(express.static(__dirname + '/public', { setHeaders: r => r.set('Cache-Control', 'no-store') }));
